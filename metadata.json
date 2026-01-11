@@ -1,0 +1,5 @@
+{
+  "name": "Ethereal Pursuit: 2.5D Ghost Hunters",
+  "description": "A tactical multiplayer hide-and-seek game where Hunters use light and bullets to reveal invisible Ghosts. Ghosts must sneak behind Hunters to possess them. Features 2.5D perspective rendering, room-based matchmaking simulation, and complex game mechanics.",
+  "requestFramePermissions": []
+}
