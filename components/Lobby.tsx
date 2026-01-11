@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { PlayerRole, ControlType } from '../types';
 
 interface LobbyProps {
-  onJoin: (roomId: string, role: PlayerRole) => void;
+  onJoin: (roomId: string, role: PlayerRole, name: string) => void;
   controlType: ControlType;
   onToggleControl: () => void;
   mouseAimEnabled: boolean;
@@ -19,6 +19,7 @@ const Lobby: React.FC<LobbyProps> = ({
 }) => {
   const [selectedRole, setSelectedRole] = useState<PlayerRole>(PlayerRole.HUNTER);
   const [roomId, setRoomId] = useState('');
+  const [playerName, setPlayerName] = useState('');
 
   const roles = [
     { 
@@ -37,9 +38,16 @@ const Lobby: React.FC<LobbyProps> = ({
     }
   ];
 
+  const handleDeploy = () => {
+    if (!playerName.trim()) {
+      alert("Please enter a player name.");
+      return;
+    }
+    onJoin(roomId || 'GLOBAL', selectedRole, playerName.trim());
+  };
+
   return (
     <div className="max-w-4xl w-full p-4 sm:p-8 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl animate-in fade-in zoom-in duration-300 relative flex flex-col mx-auto my-4 overflow-y-auto max-h-[95vh]">
-      {/* Settings Header - Responsive stacking */}
       <div className="w-full flex flex-col sm:flex-row justify-between items-center gap-4 mb-8 sm:mb-12">
         <div className="flex flex-col items-center sm:items-start">
           <h1 className="text-3xl sm:text-5xl font-orbitron font-bold tracking-tighter text-white">
@@ -86,18 +94,32 @@ const Lobby: React.FC<LobbyProps> = ({
       </div>
 
       <div className="flex flex-col space-y-4 max-w-sm mx-auto w-full">
-        <div className="relative">
-          <input
-            type="text"
-            placeholder="ROOM ID"
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-            className="w-full bg-slate-800 border-2 border-slate-700 rounded-lg py-3 sm:py-4 px-6 text-white text-base sm:text-lg focus:outline-none focus:border-cyan-500 transition-colors uppercase font-mono"
-          />
+        <div className="space-y-4">
+          <div className="relative">
+            <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Player Name</label>
+            <input
+              type="text"
+              placeholder="ENTER NAME"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value.toUpperCase())}
+              maxLength={12}
+              className="w-full bg-slate-800 border-2 border-slate-700 rounded-lg py-3 sm:py-4 px-6 text-white text-base sm:text-lg focus:outline-none focus:border-cyan-500 transition-colors uppercase font-mono"
+            />
+          </div>
+          <div className="relative">
+            <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Room ID (Optional)</label>
+            <input
+              type="text"
+              placeholder="GLOBAL"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+              className="w-full bg-slate-800 border-2 border-slate-700 rounded-lg py-3 sm:py-4 px-6 text-white text-base sm:text-lg focus:outline-none focus:border-cyan-500 transition-colors uppercase font-mono"
+            />
+          </div>
         </div>
         
         <button
-          onClick={() => onJoin(roomId || 'GLOBAL', selectedRole)}
+          onClick={handleDeploy}
           className={`w-full py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-bold font-orbitron transition-all transform hover:scale-[1.02] active:scale-95 ${
             selectedRole === PlayerRole.HUNTER 
             ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-900/50 shadow-lg' 
@@ -119,7 +141,7 @@ const Lobby: React.FC<LobbyProps> = ({
         </div>
         <div className="border border-slate-800 p-2 sm:p-3 rounded">
           <div className="text-white font-bold mb-1 uppercase">Controls</div>
-          {controlType === 'DESKTOP' ? (mouseAimEnabled ? '[WASD] & Mouse' : '[WASD] Auto-Rotate') : 'Dual Joysticks'}
+          WASD + Mouse for precision combat.
         </div>
       </div>
     </div>

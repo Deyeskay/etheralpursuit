@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { 
-  GameState, PlayerRole, GameStatus, Player, Bullet, Position, ControlType, Portal 
+  GameState, PlayerRole, GameStatus, Player, Bullet, Position, ControlType, Portal, WaitingPlayer 
 } from '../types';
 import { 
   WORLD_WIDTH, WORLD_HEIGHT, PLAYER_RADIUS, HUNTER_SPEED, GHOST_SPEED, 
@@ -19,12 +19,22 @@ const TELEPORT_COOLDOWN = 3;
 interface GameViewProps {
   roomId: string;
   userRole: PlayerRole;
+  userName: string;
+  lobbyPlayers: WaitingPlayer[];
   controlType: ControlType;
   mouseAimEnabled: boolean;
   onGameOver: () => void;
 }
 
-const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mouseAimEnabled, onGameOver }) => {
+const GameView: React.FC<GameViewProps> = ({ 
+  roomId, 
+  userRole, 
+  userName, 
+  lobbyPlayers,
+  controlType, 
+  mouseAimEnabled, 
+  onGameOver 
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
   // High-frequency input refs
@@ -63,56 +73,51 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
     timeLeft: 300,
   };
 
-  // React state for HUD/UI only
   const [gameState, setGameState] = useState<GameState>(initialGameState);
-  
-  // Simulation state ref for the loop
   const gameStateRef = useRef<GameState>(initialGameState);
 
-  // Initialize Players
+  // Initialize Players from Lobby
   useEffect(() => {
-    const createPlayer = (i: number, role: PlayerRole): Player => {
-      const isUser = i === 0 && userRole === role;
-      const spawnPos = role === PlayerRole.HUNTER 
-        ? { x: 300 + i * 80, y: 240 }
-        : { x: 900 - i * 80, y: 560 };
+    let hunterIdx = 0;
+    let ghostIdx = 0;
+    
+    const finalPlayers = lobbyPlayers.map((lp) => {
+      const isUser = lp.isLocal;
+      const spawnPos = lp.role === PlayerRole.HUNTER 
+        ? { x: 300 + (hunterIdx++) * 100, y: 240 }
+        : { x: 900 - (ghostIdx++) * 100, y: 560 };
 
       return {
-        id: `${role.toLowerCase()}-${i}`,
-        name: isUser ? 'YOU' : `${role === PlayerRole.HUNTER ? 'Hunter' : 'Ghost'} ${i + 1}`,
-        role,
+        id: lp.id,
+        name: lp.name,
+        role: lp.role,
         pos: spawnPos,
         targetPos: { x: 0, y: 0 },
-        angle: role === PlayerRole.HUNTER ? 0 : Math.PI,
-        lives: role === PlayerRole.HUNTER ? INITIAL_HUNTER_LIVES : 1,
+        angle: lp.role === PlayerRole.HUNTER ? 0 : Math.PI,
+        lives: lp.role === PlayerRole.HUNTER ? INITIAL_HUNTER_LIVES : 1,
         health: INITIAL_GHOST_HEALTH,
         maxHealth: INITIAL_GHOST_HEALTH,
-        isVisible: role === PlayerRole.HUNTER,
+        isVisible: lp.role === PlayerRole.HUNTER,
         revealTimer: 0,
         blinkTimer: 0,
         isBlinking: false,
-        color: role === PlayerRole.HUNTER ? COLORS.HUNTER : COLORS.GHOST,
+        color: lp.role === PlayerRole.HUNTER ? COLORS.HUNTER : COLORS.GHOST,
         score: 0,
         lastShootTime: 0,
         isBot: !isUser,
         stunTimer: 0,
-        abilityPoints: role === PlayerRole.GHOST ? 1 : 0,
+        abilityPoints: lp.role === PlayerRole.GHOST ? 1 : 0,
         isTeleporting: false,
         teleportTimer: 0,
         teleportCooldown: 0,
         portalEntryId: null
-      };
-    };
+      } as Player;
+    });
 
-    const hunters = Array.from({ length: 3 }).map((_, i) => createPlayer(i, PlayerRole.HUNTER));
-    const ghosts = Array.from({ length: 2 }).map((_, i) => createPlayer(i, PlayerRole.GHOST));
-
-    const finalPlayers = [...hunters, ...ghosts];
     gameStateRef.current.players = finalPlayers;
     setGameState(prev => ({ ...prev, players: finalPlayers }));
-  }, [userRole, roomId]);
+  }, [lobbyPlayers, roomId]);
 
-  // Global Input Handlers
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => { keysRef.current[e.code] = true; };
     const handleKeyUp = (e: KeyboardEvent) => { keysRef.current[e.code] = false; };
@@ -162,7 +167,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
     return distSq <= r * r;
   };
 
-  // Main Loop
   useEffect(() => {
     let animationFrameId: number;
     let lastTime = performance.now();
@@ -176,7 +180,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
       
       newPlayers.forEach(p => {
         if (p.teleportCooldown > 0) p.teleportCooldown -= dt;
-
         if (p.isTeleporting) {
           p.teleportTimer -= dt;
           if (p.teleportTimer <= 0) {
@@ -230,7 +233,7 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
             p.angle = Math.atan2(moveY, moveX);
           }
         } else {
-          // AI Logic
+          // AI
           if (p.role === PlayerRole.HUNTER) {
             const visibleGhost = newPlayers.find(g => g.role === PlayerRole.GHOST && g.isVisible && g.health > 0);
             if (visibleGhost) {
@@ -245,13 +248,16 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
               moveY = Math.sin(p.angle) * HUNTER_SPEED * 0.5;
             }
           } else {
-            const portal = state.portals[0];
-            const dx = portal.pos.x - p.pos.x;
-            const dy = portal.pos.y - p.pos.y;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist > 5) {
-              moveX = (dx / dist) * GHOST_SPEED; moveY = (dy / dist) * GHOST_SPEED;
-              p.angle = Math.atan2(dy, dx);
+            const targetHunter = newPlayers.find(h => h.role === PlayerRole.HUNTER && h.lives > 0);
+            if (targetHunter) {
+              const dx = targetHunter.pos.x - p.pos.x;
+              const dy = targetHunter.pos.y - p.pos.y;
+              const dist = Math.sqrt(dx*dx + dy*dy);
+              if (dist > 5) {
+                moveX = (dx / dist) * GHOST_SPEED * 0.4;
+                moveY = (dy / dist) * GHOST_SPEED * 0.4;
+                p.angle = Math.atan2(dy, dx);
+              }
             }
           }
         }
@@ -264,7 +270,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
           p.pos.y = nextY;
         }
 
-        // Portals (GHOST ONLY)
         if (p.role === PlayerRole.GHOST && p.teleportCooldown <= 0) {
           state.portals.forEach(port => {
             const dx = port.pos.x - p.pos.x;
@@ -289,7 +294,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
           if (p.blinkTimer <= 0) p.isVisible = false;
         }
 
-        // Shooting
         const hasActiveBullet = newBullets.some(b => b.ownerId === p.id && b.active);
         const wantsToShoot = isFiringRef.current || (controlType === 'MOBILE' && keysRef.current['KeyF']);
         if (!p.isBot && p.role === PlayerRole.HUNTER && wantsToShoot && !hasActiveBullet) {
@@ -304,7 +308,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         }
       });
 
-      // Bullets Update
       newBullets.forEach(b => {
         if (!b.active) return;
         b.pos.x += b.velocity.x;
@@ -325,7 +328,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         });
       });
 
-      // Possessions
       newPlayers.forEach(ghost => {
         if (ghost.role === PlayerRole.GHOST && ghost.health > 0 && ghost.abilityPoints > 0 && !ghost.isTeleporting) {
           newPlayers.forEach(hunter => {
@@ -356,7 +358,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
       if (huntersWin) { state.status = GameStatus.FINISHED; state.winner = PlayerRole.HUNTER; }
       else if (ghostsWin) { state.status = GameStatus.FINISHED; state.winner = PlayerRole.GHOST; }
 
-      // Sync to React state for UI
       setGameState({ ...state });
     };
 
@@ -370,9 +371,8 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
       ctx.fillStyle = COLORS.FLOOR;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const userPlayer = state.players.find(p => p.id === (userRole === PlayerRole.HUNTER ? 'hunter-0' : 'ghost-0'));
+      const userPlayer = state.players.find(p => p.name === userName);
 
-      // Portals
       if (userRole === PlayerRole.GHOST) {
         state.portals.forEach((p, idx) => {
           ctx.save();
@@ -388,7 +388,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         });
       }
 
-      // Walls
       state.walls.forEach(w => {
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(w.x, w.y, w.width, w.height + 15);
@@ -397,13 +396,11 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.strokeRect(w.x, w.y, w.width, w.height);
       });
 
-      // Bullets
       ctx.fillStyle = COLORS.BULLET;
       state.bullets.forEach(b => {
         ctx.beginPath(); ctx.arc(b.pos.x, b.pos.y, 4, 0, Math.PI * 2); ctx.fill();
       });
 
-      // Players
       state.players.forEach(p => {
         if (p.lives <= 0 || p.health <= 0 || p.isTeleporting) return;
         const shouldDraw = p.role === PlayerRole.HUNTER || p.isVisible || p.blinkTimer > 0 || userRole === PlayerRole.GHOST;
@@ -412,7 +409,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         ctx.save();
         ctx.translate(p.pos.x, p.pos.y);
 
-        // Name and Health
         ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Roboto Mono'; ctx.textAlign = 'center';
         ctx.fillText(p.name, 0, -35);
         const barWidth = 40; const barHeight = 4;
@@ -421,7 +417,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         ctx.fillStyle = p.role === PlayerRole.HUNTER ? COLORS.HUNTER : COLORS.GHOST;
         ctx.fillRect(-barWidth/2, -30, barWidth * hpPerc, barHeight);
 
-        // Opacity
         let alpha = 1;
         if (p.role === PlayerRole.GHOST) {
           if (!p.isVisible && p.blinkTimer <= 0) alpha = 0.3;
@@ -429,7 +424,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         }
         ctx.globalAlpha = alpha;
 
-        // Rotation and Body
         ctx.rotate(p.angle);
         ctx.fillStyle = p.color; ctx.beginPath();
         if (p.role === PlayerRole.HUNTER) {
@@ -439,7 +433,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         }
         ctx.fill();
 
-        // Eyes
         ctx.fillStyle = '#fff'; ctx.beginPath();
         if (p.role === PlayerRole.HUNTER) { ctx.arc(8, -6, 4, 0, Math.PI * 2); ctx.arc(8, 6, 4, 0, Math.PI * 2); }
         else { ctx.arc(6, -6, 5, 0, Math.PI * 2); ctx.arc(6, 6, 5, 0, Math.PI * 2); }
@@ -448,7 +441,6 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
         if (p.role === PlayerRole.HUNTER) { ctx.arc(10, -6, 2, 0, Math.PI * 2); ctx.arc(10, 6, 2, 0, Math.PI * 2); }
         else { ctx.arc(8, -6, 2, 0, Math.PI * 2); ctx.arc(8, 6, 2, 0, Math.PI * 2); }
         ctx.fill();
-
         ctx.restore();
 
         if (p.stunTimer > 0) {
@@ -470,9 +462,8 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
 
     animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [userRole, controlType, mouseAimEnabled]);
+  }, [userRole, userName, controlType, mouseAimEnabled]);
 
-  // Handle local UI interactions that need to modify the simulation ref
   const selectTeleportExit = (portalId: string) => {
     const state = gameStateRef.current;
     const ghost = state.players.find(p => p.role === PlayerRole.GHOST && p.isTeleporting && !p.isBot);
@@ -486,7 +477,7 @@ const GameView: React.FC<GameViewProps> = ({ roomId, userRole, controlType, mous
     }
   };
 
-  const currentUser = gameState.players.find(p => p.id === (userRole === PlayerRole.HUNTER ? 'hunter-0' : 'ghost-0'));
+  const currentUser = gameState.players.find(p => p.name === userName);
 
   return (
     <div className="relative w-full h-full flex flex-col items-center justify-center bg-black overflow-hidden" 
