@@ -1,20 +1,20 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { 
-  GameState, PlayerRole, GameStatus, Player, Bullet, Position, ControlType, Portal, WaitingPlayer 
+  GameState, PlayerRole, GameStatus, Player, Bullet, Position, ControlType, Portal, WaitingPlayer, SpeedSetting 
 } from '../types';
 import { 
-  WORLD_WIDTH, WORLD_HEIGHT, PLAYER_RADIUS, HUNTER_SPEED, GHOST_SPEED, 
+  WORLD_WIDTH, WORLD_HEIGHT, PLAYER_RADIUS, 
   BULLET_SPEED, REVEAL_DURATION, POSSESS_DIST, POSSESS_ANGLE, 
-  INITIAL_HUNTER_LIVES, INITIAL_GHOST_HEALTH, DAMAGE_PER_HIT, SHOOT_COOLDOWN, COLORS
+  INITIAL_HUNTER_LIVES, INITIAL_GHOST_HEALTH, DAMAGE_PER_HIT, COLORS, SPEED_MAP
 } from '../constants';
 
-const STUN_DURATION = 2;
-const BLINK_DURATION = 3;
+const STUN_DURATION = 2.0;
+const BLINK_DURATION = 3.0;
 const TELEPORT_WINDOW = 10;
 const MAX_ABILITY_POINTS = 2;
 const PORTAL_RADIUS = 40;
-const TELEPORT_COOLDOWN = 3;
+const TELEPORT_COOLDOWN = 3.0;
 
 interface GameViewProps {
   roomId: string;
@@ -23,6 +23,7 @@ interface GameViewProps {
   lobbyPlayers: WaitingPlayer[];
   controlType: ControlType;
   mouseAimEnabled: boolean;
+  speedSetting: SpeedSetting;
   onGameOver: () => void;
 }
 
@@ -33,17 +34,16 @@ const GameView: React.FC<GameViewProps> = ({
   lobbyPlayers,
   controlType, 
   mouseAimEnabled, 
+  speedSetting,
   onGameOver 
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  // High-frequency input refs
   const keysRef = useRef<Record<string, boolean>>({});
   const mousePosRef = useRef<Position>({ x: 0, y: 0 });
   const isFiringRef = useRef(false);
   const joystickRef = useRef({ active: false, start: { x: 0, y: 0 }, current: { x: 0, y: 0 } });
 
-  // Initial setup state
   const initialGameState: GameState = {
     players: [],
     bullets: [],
@@ -76,7 +76,6 @@ const GameView: React.FC<GameViewProps> = ({
   const [gameState, setGameState] = useState<GameState>(initialGameState);
   const gameStateRef = useRef<GameState>(initialGameState);
 
-  // Initialize Players from Lobby
   useEffect(() => {
     let hunterIdx = 0;
     let ghostIdx = 0;
@@ -177,8 +176,13 @@ const GameView: React.FC<GameViewProps> = ({
 
       const newPlayers = [...state.players];
       const newBullets = [...state.bullets];
+      const baseSpeed = SPEED_MAP[speedSetting];
       
       newPlayers.forEach(p => {
+        // --- DEAD PLAYERS ARE COMPLETELY INACTIVE ---
+        if (p.role === PlayerRole.HUNTER && p.lives <= 0) return;
+        if (p.role === PlayerRole.GHOST && p.health <= 0) return;
+
         if (p.teleportCooldown > 0) p.teleportCooldown -= dt;
         if (p.isTeleporting) {
           p.teleportTimer -= dt;
@@ -187,6 +191,9 @@ const GameView: React.FC<GameViewProps> = ({
             p.pos = { ...exitPortal.pos };
             p.isTeleporting = false;
             p.teleportCooldown = TELEPORT_COOLDOWN;
+            if (p.role === PlayerRole.GHOST) {
+              p.health = Math.min(p.health + 20, p.maxHealth);
+            }
           }
           return;
         }
@@ -198,6 +205,12 @@ const GameView: React.FC<GameViewProps> = ({
 
         let moveX = 0;
         let moveY = 0;
+        let botShoot = false;
+        let currentMaxSpeed = baseSpeed;
+        
+        if (p.role === PlayerRole.GHOST) {
+          currentMaxSpeed = (p.abilityPoints > 0) ? baseSpeed * 1.15 : baseSpeed;
+        }
 
         if (!p.isBot) {
           if (controlType === 'MOBILE' && joystickRef.current.active) {
@@ -218,9 +231,8 @@ const GameView: React.FC<GameViewProps> = ({
 
           const mag = Math.sqrt(moveX * moveX + moveY * moveY);
           if (mag > 0) {
-            const speed = p.role === PlayerRole.HUNTER ? HUNTER_SPEED : GHOST_SPEED;
-            moveX = (moveX / mag) * speed;
-            moveY = (moveY / mag) * speed;
+            moveX = (moveX / mag) * currentMaxSpeed;
+            moveY = (moveY / mag) * currentMaxSpeed;
           }
 
           if (p.role === PlayerRole.HUNTER) {
@@ -233,30 +245,63 @@ const GameView: React.FC<GameViewProps> = ({
             p.angle = Math.atan2(moveY, moveX);
           }
         } else {
-          // AI
+          // --- AI LOGIC ---
           if (p.role === PlayerRole.HUNTER) {
             const visibleGhost = newPlayers.find(g => g.role === PlayerRole.GHOST && g.isVisible && g.health > 0);
             if (visibleGhost) {
               const dx = visibleGhost.pos.x - p.pos.x;
               const dy = visibleGhost.pos.y - p.pos.y;
               const dist = Math.sqrt(dx*dx + dy*dy);
-              if (dist > 150) { moveX = (dx / dist) * HUNTER_SPEED; moveY = (dy / dist) * HUNTER_SPEED; }
               p.angle = Math.atan2(dy, dx);
+              if (dist > 80) {
+                moveX = (dx / dist) * currentMaxSpeed;
+                moveY = (dy / dist) * currentMaxSpeed;
+              }
+              if (time - p.lastShootTime > 800) botShoot = true;
             } else {
-              p.angle += dt * 0.5;
-              moveX = Math.cos(p.angle) * HUNTER_SPEED * 0.5;
-              moveY = Math.sin(p.angle) * HUNTER_SPEED * 0.5;
+              p.angle += dt * 0.8;
+              moveX = Math.cos(p.angle) * currentMaxSpeed * 0.6;
+              moveY = Math.sin(p.angle) * currentMaxSpeed * 0.6;
+              if (Math.random() < 0.01 && time - p.lastShootTime > 1500) botShoot = true;
             }
           } else {
+            // GHOST BOT
             const targetHunter = newPlayers.find(h => h.role === PlayerRole.HUNTER && h.lives > 0);
-            if (targetHunter) {
-              const dx = targetHunter.pos.x - p.pos.x;
-              const dy = targetHunter.pos.y - p.pos.y;
+            const nearestPortal = state.portals.reduce((prev, curr) => {
+              const dPrev = Math.sqrt((prev.pos.x - p.pos.x)**2 + (prev.pos.y - p.pos.y)**2);
+              const dCurr = Math.sqrt((curr.pos.x - p.pos.x)**2 + (curr.pos.y - p.pos.y)**2);
+              return dCurr < dPrev ? curr : prev;
+            });
+
+            // STRICT FLEE LOGIC
+            if (p.isVisible || p.health < p.maxHealth * 0.4 || p.abilityPoints === 0) {
+              const dx = nearestPortal.pos.x - p.pos.x;
+              const dy = nearestPortal.pos.y - p.pos.y;
               const dist = Math.sqrt(dx*dx + dy*dy);
-              if (dist > 5) {
-                moveX = (dx / dist) * GHOST_SPEED * 0.4;
-                moveY = (dy / dist) * GHOST_SPEED * 0.4;
+              if (dist > 8) {
+                moveX = (dx / dist) * currentMaxSpeed;
+                moveY = (dy / dist) * currentMaxSpeed;
                 p.angle = Math.atan2(dy, dx);
+              }
+            } else if (targetHunter) {
+              const stalkDist = 80;
+              const behindX = targetHunter.pos.x - Math.cos(targetHunter.angle) * stalkDist;
+              const behindY = targetHunter.pos.y - Math.sin(targetHunter.angle) * stalkDist;
+              const dx = behindX - p.pos.x;
+              const dy = behindY - p.pos.y;
+              const dist = Math.sqrt(dx*dx + dy*dy);
+              
+              if (dist > 30) {
+                moveX = (dx / dist) * currentMaxSpeed * 0.9;
+                moveY = (dy / dist) * currentMaxSpeed * 0.9;
+                p.angle = Math.atan2(dy, dx);
+              } else {
+                const strikeX = targetHunter.pos.x - p.pos.x;
+                const strikeY = targetHunter.pos.y - p.pos.y;
+                const strikeDist = Math.sqrt(strikeX*strikeX + strikeY*strikeY);
+                moveX = (strikeX / strikeDist) * currentMaxSpeed;
+                moveY = (strikeY / strikeDist) * currentMaxSpeed;
+                p.angle = Math.atan2(strikeY, strikeX);
               }
             }
           }
@@ -265,9 +310,12 @@ const GameView: React.FC<GameViewProps> = ({
         const nextX = p.pos.x + moveX;
         const nextY = p.pos.y + moveY;
         let collided = state.walls.some(w => checkCircleRectCollision(nextX, nextY, PLAYER_RADIUS, w.x, w.y, w.width, w.height));
+        
         if (!collided && nextX > PLAYER_RADIUS && nextX < WORLD_WIDTH - PLAYER_RADIUS && nextY > PLAYER_RADIUS && nextY < WORLD_HEIGHT - PLAYER_RADIUS) {
           p.pos.x = nextX;
           p.pos.y = nextY;
+        } else if (p.isBot) {
+          p.angle += Math.PI * 0.3;
         }
 
         if (p.role === PlayerRole.GHOST && p.teleportCooldown <= 0) {
@@ -294,10 +342,13 @@ const GameView: React.FC<GameViewProps> = ({
           if (p.blinkTimer <= 0) p.isVisible = false;
         }
 
-        const hasActiveBullet = newBullets.some(b => b.ownerId === p.id && b.active);
-        const wantsToShoot = isFiringRef.current || (controlType === 'MOBILE' && keysRef.current['KeyF']);
-        if (!p.isBot && p.role === PlayerRole.HUNTER && wantsToShoot && !hasActiveBullet) {
-           if (time - p.lastShootTime > 150) {
+        const wantsToShoot = !p.isBot 
+          ? (isFiringRef.current || (controlType === 'MOBILE' && keysRef.current['KeyF']))
+          : botShoot;
+
+        if (p.role === PlayerRole.HUNTER && wantsToShoot) {
+           const hasActiveBullet = newBullets.some(b => b.ownerId === p.id && b.active);
+           if (!hasActiveBullet && time - p.lastShootTime > (p.isBot ? 800 : 150)) {
               newBullets.push({
                 id: `b-${Date.now()}-${p.id}`, ownerId: p.id, pos: { ...p.pos },
                 velocity: { x: Math.cos(p.angle) * BULLET_SPEED, y: Math.sin(p.angle) * BULLET_SPEED },
@@ -328,25 +379,29 @@ const GameView: React.FC<GameViewProps> = ({
         });
       });
 
+      // --- IMPROVED POSSESSION LOGIC ---
       newPlayers.forEach(ghost => {
         if (ghost.role === PlayerRole.GHOST && ghost.health > 0 && ghost.abilityPoints > 0 && !ghost.isTeleporting) {
-          newPlayers.forEach(hunter => {
+          for (let hunter of newPlayers) {
             if (hunter.role === PlayerRole.HUNTER && hunter.lives > 0 && hunter.stunTimer <= 0) {
               const dx = hunter.pos.x - ghost.pos.x;
               const dy = hunter.pos.y - ghost.pos.y;
               const dist = Math.sqrt(dx*dx + dy*dy);
               if (dist < POSSESS_DIST) {
-                const angleToGhost = Math.atan2(ghost.pos.y - hunter.pos.y, ghost.pos.x - hunter.pos.x);
-                let diff = Math.abs(angleToGhost - hunter.angle) * (180 / Math.PI);
-                while (diff > 180) diff = Math.abs(diff - 360);
-                if (diff > 180 - (POSSESS_ANGLE / 2)) {
+                let angleToGhost = Math.atan2(ghost.pos.y - hunter.pos.y, ghost.pos.x - hunter.pos.x);
+                let diff = (angleToGhost - hunter.angle) * (180 / Math.PI);
+                while (diff < -180) diff += 360;
+                while (diff > 180) diff -= 360;
+                
+                if (Math.abs(diff) > 180 - (POSSESS_ANGLE / 2)) {
                   hunter.lives -= 1;
                   hunter.stunTimer = STUN_DURATION;
                   ghost.abilityPoints -= 1;
+                  if (ghost.abilityPoints <= 0) break; 
                 }
               }
             }
-          });
+          }
         }
       });
 
@@ -371,12 +426,12 @@ const GameView: React.FC<GameViewProps> = ({
       ctx.fillStyle = COLORS.FLOOR;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const userPlayer = state.players.find(p => p.name === userName);
+      const userPlayer = state.players.find(p => !p.isBot);
 
       if (userRole === PlayerRole.GHOST) {
         state.portals.forEach((p, idx) => {
           ctx.save();
-          let portalColor = userPlayer?.teleportCooldown && userPlayer.teleportCooldown > 0 ? '#ef4444' : '#22c55e';
+          let portalColor = (userPlayer?.role === PlayerRole.GHOST && userPlayer?.teleportCooldown && userPlayer.teleportCooldown > 0) ? '#ef4444' : '#22c55e';
           ctx.globalAlpha = 0.8;
           const grad = ctx.createRadialGradient(p.pos.x, p.pos.y, 5, p.pos.x, p.pos.y, PORTAL_RADIUS);
           grad.addColorStop(0, portalColor);
@@ -402,20 +457,32 @@ const GameView: React.FC<GameViewProps> = ({
       });
 
       state.players.forEach(p => {
-        if (p.lives <= 0 || p.health <= 0 || p.isTeleporting) return;
-        const shouldDraw = p.role === PlayerRole.HUNTER || p.isVisible || p.blinkTimer > 0 || userRole === PlayerRole.GHOST;
+        if ((p.role === PlayerRole.HUNTER && p.lives <= 0) || (p.role === PlayerRole.GHOST && p.health <= 0) || p.isTeleporting) return;
+        
+        const isSelf = !p.isBot;
+        const shouldDraw = p.role === PlayerRole.HUNTER || p.isVisible || p.blinkTimer > 0 || userRole === PlayerRole.GHOST || isSelf;
         if (!shouldDraw) return;
 
         ctx.save();
         ctx.translate(p.pos.x, p.pos.y);
 
         ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Roboto Mono'; ctx.textAlign = 'center';
-        ctx.fillText(p.name, 0, -35);
+        ctx.fillText(p.isBot ? `[AI] ${p.name}` : p.name, 0, -35);
         const barWidth = 40; const barHeight = 4;
         ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(-barWidth/2, -30, barWidth, barHeight);
         const hpPerc = p.role === PlayerRole.HUNTER ? (p.lives / INITIAL_HUNTER_LIVES) : (p.health / INITIAL_GHOST_HEALTH);
         ctx.fillStyle = p.role === PlayerRole.HUNTER ? COLORS.HUNTER : COLORS.GHOST;
-        ctx.fillRect(-barWidth/2, -30, barWidth * hpPerc, barHeight);
+        ctx.fillRect(-barWidth/2, -30, barWidth * Math.max(0, hpPerc), barHeight);
+
+        // ABILITY PIPS FOR GHOSTS
+        if (p.role === PlayerRole.GHOST) {
+          for (let i = 0; i < p.abilityPoints; i++) {
+            ctx.fillStyle = '#fuchsia';
+            ctx.beginPath();
+            ctx.arc(-15 + (i * 10), -40, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
 
         let alpha = 1;
         if (p.role === PlayerRole.GHOST) {
@@ -462,7 +529,7 @@ const GameView: React.FC<GameViewProps> = ({
 
     animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [userRole, userName, controlType, mouseAimEnabled]);
+  }, [userRole, userName, controlType, mouseAimEnabled, speedSetting]);
 
   const selectTeleportExit = (portalId: string) => {
     const state = gameStateRef.current;
@@ -477,7 +544,7 @@ const GameView: React.FC<GameViewProps> = ({
     }
   };
 
-  const currentUser = gameState.players.find(p => p.name === userName);
+  const currentUser = gameState.players.find(p => !p.isBot);
 
   return (
     <div className="relative w-full h-full flex flex-col items-center justify-center bg-black overflow-hidden" 
@@ -556,7 +623,7 @@ const GameView: React.FC<GameViewProps> = ({
                             top: `calc(50% + ${Math.min(joystickRef.current.current.y - joystickRef.current.start.y, 50)}px - 16px)` }} />
             )}
           </div>
-          {userRole === PlayerRole.HUNTER && (
+          {userRole === PlayerRole.HUNTER && (currentUser?.lives || 0) > 0 && (
             <button onPointerDown={() => keysRef.current['KeyF'] = true} onPointerUp={() => keysRef.current['KeyF'] = false} className="absolute bottom-8 sm:bottom-10 right-8 sm:right-10 w-20 h-20 sm:w-24 sm:h-24 bg-cyan-600/50 border-4 border-cyan-400 rounded-full text-white flex items-center justify-center text-2xl sm:text-3xl active:scale-90 transition-transform pointer-events-auto">
               <i className="fas fa-crosshairs"></i>
             </button>

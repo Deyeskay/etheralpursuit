@@ -12,6 +12,7 @@ export enum GameStatus {
 }
 
 export type ControlType = 'DESKTOP' | 'MOBILE';
+export type SpeedSetting = 'VERY_SLOW' | 'SLOW' | 'MEDIUM' | 'FAST';
 
 export interface Position {
   x: number;
